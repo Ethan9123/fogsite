@@ -9,6 +9,7 @@ import {
 } from './rules.js';
 import { emptyMaze, validateMaze, generateMaze, makeRng } from './maze.js';
 import * as G from './game.js';
+import { projectForInvestigator, projectForGuardian } from './project.js';
 
 const app = document.getElementById('app');
 const clockEl = document.getElementById('clock');
@@ -107,42 +108,40 @@ function renderBuilderGrid(b) {
   return `<div class="gridwrap"><div class="grid" style="grid-template-columns:repeat(${GRID},52px)">${cells.join('')}</div></div>`;
 }
 
-// Investigator ego-centric relative map (9x9, start at center). Hides absolute
-// coordinates, guard/deity, and other investigators — pure deduction view.
+// Investigator ego-centric relative map (9x9, start at center). Renders from the
+// pure projection (which hides absolute coordinates, guard/deity, and other
+// investigators) — same secrecy layer the online server will use per client.
 function renderEgoGrid(g, color) {
-  const it = g.inv[color];
-  const span = 4; // display radius
-  const size = span * 2 + 1;
+  const view = projectForInvestigator(g, color);
   const cells = [];
-  for (let dr = -span; dr <= span; dr++) {
-    for (let dc = -span; dc <= span; dc++) {
-      const ar = it.startPos.r + dr, ac = it.startPos.c + dc;
-      const val = it.explored[key(ar, ac)];
-      const cls = cellClass(val);
+  for (let row = 0; row < view.size; row++) {
+    for (let col = 0; col < view.size; col++) {
+      const cls = cellClass(view.grid[row][col]);
       let inner = '';
-      if (it.pos.r === ar && it.pos.c === ac) inner += `<span class="pawn ${color}"></span>`;
-      if (it.startPos.r === ar && it.startPos.c === ac) inner += '<span class="mark">起</span>';
+      if (view.self.row === row && view.self.col === col) inner += `<span class="pawn ${color}"></span>`;
+      if (view.start.row === row && view.start.col === col) inner += '<span class="mark">起</span>';
       cells.push(`<div class="cell ${cls}">${inner}</div>`);
     }
   }
-  return `<div class="gridwrap"><div class="grid" style="grid-template-columns:repeat(${size},52px)">${cells.join('')}</div></div>`;
+  return `<div class="gridwrap"><div class="grid" style="grid-template-columns:repeat(${view.size},52px)">${cells.join('')}</div></div>`;
 }
 
-// Guardian full-truth grid (absolute) with all pawns, guard, deity.
+// Guardian full-truth grid (absolute) with all pawns, guard, deity. Renders from
+// the pure guardian projection.
 function renderTruthGrid(g) {
+  const view = projectForGuardian(g);
   const cells = [];
   for (let r = 0; r < GRID; r++) {
     for (let c = 0; c < GRID; c++) {
-      const t = g.maze.cells[r][c];
-      const cls = t === CELL.WALL ? 'wall' : t === CELL.CHAMBER ? 'chamber' : 'room';
+      const cell = view.grid[r][c];
+      const cls = cell.type === CELL.WALL ? 'wall' : cell.type === CELL.CHAMBER ? 'chamber' : 'room';
       let inner = '';
-      if (t === CELL.CHAMBER) inner += '<span class="mark">石</span>';
-      const here = g.colors.filter((col) => g.inv[col].pos.r === r && g.inv[col].pos.c === c);
-      here.forEach((col, i) => {
+      if (cell.type === CELL.CHAMBER) inner += '<span class="mark">石</span>';
+      cell.pawns.forEach((col, i) => {
         inner += `<span class="pawn ${col}" style="left:${6 + i * 12}px;top:${14}px"></span>`;
       });
-      if (g.guard.pos.r === r && g.guard.pos.c === c) inner += '<span class="guard" title="卫兵"></span>';
-      if (g.deity.active && g.deity.pos.r === r && g.deity.pos.c === c) inner += '<span class="deity" title="守护神"></span>';
+      if (cell.guard) inner += '<span class="guard" title="卫兵"></span>';
+      if (cell.deity) inner += '<span class="deity" title="守护神"></span>';
       cells.push(`<div class="cell ${cls}">${inner}</div>`);
     }
   }
