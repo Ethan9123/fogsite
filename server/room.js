@@ -40,7 +40,10 @@ function seatTaken(room, role, color) {
 }
 
 const fail = (room, msg) => ({ state: room, error: msg });
-const done = (room) => ({ state: room, error: null });
+// `result` (optional) is a small, per-actor payload the transport delivers
+// privately to the acting client (e.g. an ability's secret answer, an explore
+// outcome, an attack hit/block) — it never goes to other players.
+const done = (room, result = null) => ({ state: room, error: null, result });
 
 // ---------------------------------------------------------------------------
 // applyAction — the single entry point. Validates shape, then role/turn/phase,
@@ -117,7 +120,10 @@ export function applyAction(room, playerId, action) {
       else res = G.useAbility(g, color, action.params || {});
       if (!res || !res.ok) return fail(room, (res && res.reason) || 'illegal action');
       syncPhase(room);
-      return done(room);
+      let result = null;
+      if (action.type === TYPES.EXPLORE) result = { kind: 'explore', outcome: res.result };
+      else if (action.type === TYPES.ABILITY) result = { kind: 'ability', info: res.info };
+      return done(room, result);
     }
 
     // ---- escape decision (MODE.ESCAPE_DECISION) ----
@@ -168,7 +174,10 @@ export function applyAction(room, playerId, action) {
       else res = G.endGuardianTurn(g);
       if (!res || !res.ok) return fail(room, (res && res.reason) || 'illegal guardian action');
       syncPhase(room);
-      return done(room);
+      const result = action.type === TYPES.ATTACK
+        ? { kind: 'attack', color: action.color, attacker: action.attacker, success: res.success }
+        : null;
+      return done(room, result);
     }
 
     default:
@@ -205,6 +214,7 @@ export function viewFor(room, playerId) {
     color: p ? p.color : null,
     seats: Object.fromEntries(Object.entries(room.players).map(([id, pl]) => [id, { role: pl.role, color: pl.color, name: pl.name }])),
     escape: room.escape ? { confirms: room.escape.confirms.slice(), deadline: room.escape.deadline } : null,
+    winner: room.game ? room.game.winner : null,
   };
   if (!room.game || room.phase === 'lobby') return { ...base, view: null };
 

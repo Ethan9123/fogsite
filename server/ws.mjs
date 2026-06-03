@@ -110,6 +110,7 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
         return;
       }
       if (action.type === MSG.JOIN && action.role === 'guardian') entry.guardianPid = pid;
+      if (res.result) send(ws, { type: 'result', result: res.result }); // private to the actor
       manageEscapeTimer(entry, broadcastState);
       broadcastState(entry);
     });
