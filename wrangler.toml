@@ -1,0 +1,30 @@
+# FOGSITE — Cloudflare Workers + Durable Objects deploy config.
+#
+# Deploy:   npx wrangler deploy
+# Local dev: npx wrangler dev   (runs the Worker + DO locally via workerd)
+#
+# In production, set the origin allowlist so only your own site may open the
+# game socket:   npx wrangler deploy --var ALLOWED_ORIGINS:https://your.site
+# (or set it in the dashboard). Leave it empty for local dev to allow any origin.
+name = "fogsite"
+main = "worker/index.js"
+compatibility_date = "2025-04-01"
+
+# Serve the static client. `npm run build:client` assembles exactly the files
+# the browser loads into ./public; the Worker only handles /api/rooms and /ws,
+# and every other path is served from there.
+[assets]
+directory = "public"
+binding = "ASSETS"
+
+# One Durable Object per room.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+[vars]
+ALLOWED_ORIGINS = ""
