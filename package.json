@@ -1,0 +1,9 @@
+{
+  "name": "fogsite-app",
+  "version": "0.1.0",
+  "description": "Digital adaptation of the board game FOGSITE (full Arclight ruleset) — local hotseat.",
+  "type": "module",
+  "scripts": {
+    "test": "node test/engine.test.mjs"
+  }
+}
