@@ -4,7 +4,7 @@
   "description": "Digital adaptation of the board game FOGSITE (full Arclight ruleset) — local hotseat.",
   "type": "module",
   "scripts": {
-    "test": "node test/engine.test.mjs && node test/project.test.mjs && node test/room.test.mjs && node test/ws.test.mjs",
+    "test": "node test/engine.test.mjs && node test/project.test.mjs && node test/room.test.mjs && node test/ws.test.mjs && node test/net.test.mjs",
     "dev": "node server/ws.mjs",
     "build:client": "node worker/build-client.mjs",
     "dev:worker": "npm run build:client && wrangler dev",

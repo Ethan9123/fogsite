@@ -27,34 +27,68 @@ export async function lookupRoom(code) {
 }
 
 // ---- the WebSocket connection ---------------------------------------------
-// handlers: { onOpen, onClose, onWelcome(msg), onState(state), onResult(result), onError(msg) }
-export function connect(code, handlers = {}) {
-  const saved = sessionStorage.getItem(tokenKey(code)) || '';
-  const qs = new URLSearchParams({ code });
-  if (saved) qs.set('token', saved);
-  const ws = new WebSocket(`${wsBase()}/ws?${qs}`);
+// handlers: { onOpen, onClose, onReconnecting({attempt,delay}), onWelcome(msg),
+//             onState(state), onResult(result), onError(msg) }
+//
+// The socket auto-reconnects: if it drops for any reason other than a deliberate
+// close() (tab still open — wifi blip, sleep, server restart), it redials with a
+// capped exponential backoff, presenting the saved token so the server restores
+// the SAME seat (room.players[pid] persists). The caller's render just keeps
+// showing the last pushed view until the fresh `state` arrives on reconnect.
+const RETRY_BASE_MS = 500;
+const RETRY_CAP_MS = 10000;
 
-  ws.addEventListener('open', () => handlers.onOpen && handlers.onOpen());
-  ws.addEventListener('close', () => handlers.onClose && handlers.onClose());
-  ws.addEventListener('error', () => handlers.onError && handlers.onError({ error: '连接错误' }));
-  ws.addEventListener('message', (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    switch (msg.type) {
-      case 'welcome':
-        if (msg.token) sessionStorage.setItem(tokenKey(code), msg.token);
-        handlers.onWelcome && handlers.onWelcome(msg);
-        break;
-      case 'state': handlers.onState && handlers.onState(msg.state); break;
-      case 'result': handlers.onResult && handlers.onResult(msg.result); break;
-      case 'error': handlers.onError && handlers.onError(msg); break;
-    }
-  });
+export function connect(code, handlers = {}) {
+  let ws = null;
+  let closedByUser = false;
+  let retry = 0;
+  let retryTimer = null;
+
+  const dialUrl = () => {
+    const saved = sessionStorage.getItem(tokenKey(code)) || '';
+    const qs = new URLSearchParams({ code });
+    if (saved) qs.set('token', saved); // restore the same seat on reconnect
+    return `${wsBase()}/ws?${qs}`;
+  };
+
+  function dial() {
+    ws = new WebSocket(dialUrl());
+
+    ws.addEventListener('open', () => { retry = 0; handlers.onOpen && handlers.onOpen(); });
+
+    ws.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      switch (msg.type) {
+        case 'welcome':
+          if (msg.token) sessionStorage.setItem(tokenKey(code), msg.token);
+          handlers.onWelcome && handlers.onWelcome(msg);
+          break;
+        case 'state': handlers.onState && handlers.onState(msg.state); break;
+        case 'result': handlers.onResult && handlers.onResult(msg.result); break;
+        case 'error': handlers.onError && handlers.onError(msg); break;
+      }
+    });
+
+    // A transport error is always followed by 'close'; let close own the retry
+    // so we don't surface a scary "connection error" toast on every blip.
+    ws.addEventListener('error', () => {});
+
+    ws.addEventListener('close', () => {
+      handlers.onClose && handlers.onClose();
+      if (closedByUser) return;
+      const delay = Math.min(RETRY_BASE_MS * 2 ** retry, RETRY_CAP_MS);
+      retry++;
+      handlers.onReconnecting && handlers.onReconnecting({ attempt: retry, delay });
+      retryTimer = setTimeout(dial, delay);
+    });
+  }
+  dial();
 
   return {
-    send: (action) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(action)); },
-    close: () => ws.close(),
+    send: (action) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(action)); },
+    close: () => { closedByUser = true; if (retryTimer) clearTimeout(retryTimer); if (ws) ws.close(); },
     forget: () => sessionStorage.removeItem(tokenKey(code)),
-    get open() { return ws.readyState === WebSocket.OPEN; },
+    get open() { return !!ws && ws.readyState === WebSocket.OPEN; },
   };
 }

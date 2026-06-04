@@ -771,6 +771,7 @@ function newOnline() {
     code: null,
     codeInput: '',
     you: null,
+    conn: 'connecting', // 'connecting' | 'online' | 'reconnecting'
     state: null,        // last viewFor pushed by the server
     notice: null,       // transient private result (explore / ability / attack)
     error: null,        // transient error
@@ -824,12 +825,14 @@ async function onlineStart(rawCode) {
     o.error = '无法连接服务器（请确认在线服务器 server/ws.mjs 正在运行）。'; render(); return;
   }
   o.code = code;
+  o.conn = 'connecting';
   o.net = Net.connect(code, {
+    onOpen: () => { if (ui.online === o) { o.conn = 'online'; render(); } },
     onWelcome: (m) => { o.you = m.you; },
     onState: (s) => onOnlineState(s),
     onResult: (r) => { if (ui.online === o) { o.notice = describeResult(r); render(); } },
     onError: (m) => { if (ui.online === o) { o.error = m.error || '操作被拒绝'; render(); } },
-    onClose: () => { if (ui.online === o && ui.mode === 'online') { o.error = '连接已断开'; render(); } },
+    onReconnecting: () => { if (ui.online === o && ui.mode === 'online') { o.conn = 'reconnecting'; render(); } },
   });
   render();
 }
@@ -893,9 +896,21 @@ function renderOnline() {
   else if (o.state.role === 'guardian') html = renderOnlineGuardian();
   else html = renderOnlineInvestigator();
   const banner =
+    connBadge(o.conn) +
     (o.error ? `<div class="notice bad">${esc(o.error)}</div>` : '') +
     (o.notice ? `<div class="notice good">${esc(o.notice)}</div>` : '');
   app.innerHTML = banner + html;
+}
+
+// Connection health. Stays out of the way while healthy; surfaces a clear,
+// non-alarming notice while connecting or auto-reconnecting (the seat is held
+// server-side, so the game resumes the moment the socket comes back).
+function connBadge(conn) {
+  if (conn === 'reconnecting')
+    return `<div class="notice" style="text-align:center;color:#c8a24a">● 连接已断开，正在自动重连…（你的座位已保留）</div>`;
+  if (conn === 'connecting')
+    return `<div class="notice hint" style="text-align:center">● 连接中…</div>`;
+  return '';
 }
 
 function roomBadge(code) {
