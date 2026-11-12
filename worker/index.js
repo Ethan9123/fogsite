@@ -144,7 +144,7 @@ export class Room {
       // Resolve the seat: reuse it on a valid reconnect token, else assign a new one.
       const reconnectToken = url.searchParams.get('token');
       let pid;
-      if (reconnectToken && this.seats.tokens[reconnectToken] !== undefined) {
+      if (reconnectToken && Object.hasOwn(this.seats.tokens, reconnectToken)) {
         pid = this.seats.tokens[reconnectToken];
         for (const old of this.state.getWebSockets()) {
           const a = old.deserializeAttachment();

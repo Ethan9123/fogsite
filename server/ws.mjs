@@ -69,7 +69,7 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
     }
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
   http.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');
@@ -83,6 +83,9 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
   });
 
   wss.on('connection', (ws, _req, entry, reconnectToken) => {
+    // ws emits protocol/transport errors on the individual connection. Without
+    // this listener a malformed frame can terminate the entire Node process.
+    ws.on('error', () => ws.terminate());
     // Resolve the player id: reuse the seat on a valid reconnect token, else new.
     let pid;
     if (reconnectToken && entry.tokens.has(reconnectToken)) {
@@ -101,6 +104,7 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
     send(ws, { type: 'state', state: viewFor(entry.room, pid) });
 
     ws.on('message', (data) => {
+      if (entry.clients.get(pid) !== ws) return; // replaced during reconnect
       let action;
       try { action = JSON.parse(data.toString()); } catch { return send(ws, { type: 'error', error: 'malformed message' }); }
       const res = applyAction(entry.room, pid, action);

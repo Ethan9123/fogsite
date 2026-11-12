@@ -1,5 +1,5 @@
 // FOGSITE — maze model, constraint validation, and random generator.
-import { GRID, CELL, RULES, inBounds, DIRS } from './rules.js';
+import { GRID, CELL, COLORS, RULES, inBounds, DIRS } from './rules.js';
 
 // A maze is { cells: type[GRID][GRID], starts: {color:{r,c}}, chamber:{r,c} }.
 
@@ -90,8 +90,31 @@ function adjacent(a, b) {
   return Math.abs(a.r - b.r) + Math.abs(a.c - b.c) === 1;
 }
 
+// Check wire/storage data before any rule validator indexes the grid. Incomplete
+// local builders may omit starts/chamber, but malformed coordinates never reach
+// the engine. Rule validation below reports missing pieces separately.
+export function validateMazeShape(m) {
+  const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const point = (v) => record(v) && Number.isInteger(v.r) && Number.isInteger(v.c) && inBounds(v.r, v.c);
+  if (!record(m)) return 'maze must be an object';
+  if (!Array.isArray(m.cells) || m.cells.length !== GRID) return 'maze.cells must be a 5x5 grid';
+  for (const row of m.cells) {
+    if (!Array.isArray(row) || row.length !== GRID) return 'maze.cells must be a 5x5 grid';
+    for (const cell of row) if (!Object.values(CELL).includes(cell)) return 'unknown maze cell';
+  }
+  if (!record(m.starts)) return 'maze.starts must be an object';
+  for (const [color, start] of Object.entries(m.starts)) {
+    if (!COLORS.includes(color) || !point(start)) return 'invalid maze start coordinate';
+  }
+  if (m.chamber !== null && !point(m.chamber)) return 'invalid maze chamber coordinate';
+  if (m.chamber && m.cells[m.chamber.r][m.chamber.c] !== CELL.CHAMBER) return 'maze chamber does not match its cell';
+  return null;
+}
+
 // Returns { ok, errors:[{code,msg}] }.
 export function validateMaze(m, colors) {
+  const shapeError = validateMazeShape(m);
+  if (shapeError) return { ok: false, errors: [{ code: 'shape', msg: shapeError }] };
   const errors = [];
   const walls = countType(m, CELL.WALL);
   const chambers = countType(m, CELL.CHAMBER);
@@ -116,6 +139,9 @@ export function validateMaze(m, colors) {
   const placed = colors.filter((c) => m.starts[c]).map((c) => m.starts[c]);
   for (let i = 0; i < placed.length; i++) {
     for (let j = i + 1; j < placed.length; j++) {
+      if (placed[i].r === placed[j].r && placed[i].c === placed[j].c) {
+        errors.push({ code: 'start-overlap', msg: '起始格不能重叠。' });
+      }
       if (adjacent(placed[i], placed[j])) {
         errors.push({ code: 'start-adj', msg: '起始格之间不能正交相邻。' });
       }

@@ -1,0 +1,23 @@
+name: Multiplayer regression checks
+on:
+  pull_request:
+  push:
+    branches: ['fix/multiplayer-crash-hardening']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:client
+      - name: Check Worker bundle without deploying
+        run: npx wrangler deploy --dry-run --outdir dist-worker
+        env:
+          WRANGLER_SEND_METRICS: 'false'

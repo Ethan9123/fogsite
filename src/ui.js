@@ -807,32 +807,41 @@ function netSend(action) {
   if (o && o.net) { o.error = null; o.net.send(action); }
 }
 
-// Investigator colors currently seated (derived from the public roster).
+// Active colors follow the public player count; names/seat ids stay private.
 function onlineColors() {
-  const seats = ui.online.state ? ui.online.state.seats : {};
+  const state = ui.online.state;
+  if (state && state.phase !== 'lobby') return COLORS.slice(0, state.playerCount);
+  const seats = state ? state.seats : {};
   const present = new Set(Object.values(seats).filter((s) => s.role === 'investigator').map((s) => s.color));
   return COLORS.filter((c) => present.has(c));
 }
 
 async function onlineStart(rawCode) {
   const o = ui.online;
+  if (!o || o.pending) return;
+  o.pending = true;
   o.error = null;
   let code = rawCode;
   try {
     if (!code) code = await Net.createRoom();
     else {
       const info = await Net.lookupRoom(code);
+      if (ui.online !== o) return;
       if (!info.exists) { o.error = `房间 ${code} 不存在`; render(); return; }
     }
   } catch {
+    if (ui.online !== o) return;
     o.error = '无法连接服务器（请确认在线服务器 server/ws.mjs 正在运行）。'; render(); return;
+  } finally {
+    o.pending = false;
   }
+  if (ui.online !== o) return;
   o.code = code;
   o.conn = 'connecting';
   o.net = Net.connect(code, {
     onOpen: () => { if (ui.online === o) { o.conn = 'online'; render(); } },
     onWelcome: (m) => { o.you = m.you; },
-    onState: (s) => onOnlineState(s),
+    onState: (s) => { if (ui.online === o) onOnlineState(s); },
     onResult: (r) => { if (ui.online === o) { o.notice = describeResult(r); render(); } },
     onError: (m) => { if (ui.online === o) { o.error = m.error || '操作被拒绝'; render(); } },
     onReconnecting: () => { if (ui.online === o && ui.mode === 'online') { o.conn = 'reconnecting'; render(); } },
@@ -896,6 +905,7 @@ function renderOnline() {
   if (!o.code || !o.state) html = renderOnlineLobby();
   else if (o.state.phase === 'lobby') html = renderOnlineSeats();
   else if (o.state.phase === 'over') html = renderOnlineOver();
+  else if (!o.state.view || !o.state.role) html = renderOnlineUnseated();
   else if (o.state.role === 'guardian') html = renderOnlineGuardian();
   else html = renderOnlineInvestigator();
   const banner =
@@ -989,6 +999,15 @@ function renderOnlineSeats() {
     <button data-act="o-seat" class="primary big">入座</button>
     <div class="spacer"></div>
     <button data-act="o-menu">← 离开房间</button>
+  </div>`;
+}
+
+function renderOnlineUnseated() {
+  return `<div class="panel center">
+    <h2>对局已经开始</h2>
+    ${roomBadge(ui.online.code)}
+    <p class="hint">你在这局中没有座位，无法加入或查看棋盘。若要重连，请使用原来的浏览器标签页。</p>
+    <button data-act="o-menu" class="primary">← 返回模式选择</button>
   </div>`;
 }
 
@@ -1103,7 +1122,7 @@ function onlineEscapePanel() {
   const mine = confirms.includes(v.color);
   const remain = s.escape && s.escape.deadline ? Math.max(0, s.escape.deadline - Date.now()) : 0;
   const cols = onlineColors();
-  const tally = cols.map((c) => `<span class="pill tag-${c}" style="opacity:${confirms.includes(c) ? 1 : 0.35}">${COLOR_LABEL[c]}${confirms.includes(c) ? ' ✓' : ''}</span>`).join(' ');
+  const tally = `${s.escape?.confirmCount ?? confirms.length}/${cols.length} 人`;
   return `<h3>脱出挑战</h3>
     <p class="hint">若你们认为全员已在同一格，全部 ${cols.length} 人在倒计时内确认即触发检定。倒计时结束未全员确认则放弃脱出、继续探索。</p>
     <div class="who" id="escape-timer" style="color:var(--accent)">${(remain / 1000).toFixed(1)}s</div>
