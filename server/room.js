@@ -10,7 +10,7 @@ import * as G from '../src/game.js';
 import { MODE, COLORS } from '../src/rules.js';
 import { validateMaze } from '../src/maze.js';
 import { projectForInvestigator, projectForGuardian } from '../src/project.js';
-import { TYPES, validateAction } from './protocol.js';
+import { TYPES, validateAction, validateAbilityParams } from './protocol.js';
 
 export const ESCAPE_SECONDS = 60; // window length the transport should count down
 
@@ -40,7 +40,10 @@ function seatTaken(room, role, color) {
 }
 
 const fail = (room, msg) => ({ state: room, error: msg });
-const done = (room) => ({ state: room, error: null });
+// `result` (optional) is a small, per-actor payload the transport delivers
+// privately to the acting client (e.g. an ability's secret answer, an explore
+// outcome, an attack hit/block) — it never goes to other players.
+const done = (room, result = null) => ({ state: room, error: null, result });
 
 // ---------------------------------------------------------------------------
 // applyAction — the single entry point. Validates shape, then role/turn/phase,
@@ -87,7 +90,12 @@ export function applyAction(room, playerId, action) {
           return fail(room, `missing investigator seat: ${c}`);
         }
       }
+      if (Object.values(room.players).some((p) => p.role === 'investigator' && !colors.includes(p.color))) {
+        return fail(room, 'configured count excludes an occupied investigator seat');
+      }
       if (!room.config.maze) return fail(room, 'no maze configured');
+      const configError = validateAction({ type: TYPES.CONFIGURE, ...room.config });
+      if (configError) return fail(room, configError);
       const v = validateMaze(room.config.maze, colors);
       if (!v.ok) return fail(room, 'invalid maze: ' + v.errors.map((e) => e.code).join(','));
       room.game = G.createGame({
@@ -108,23 +116,31 @@ export function applyAction(room, playerId, action) {
     case TYPES.PASS: {
       if (room.phase !== 'playing' || !g || g.mode !== MODE.INVESTIGATORS) return fail(room, 'not the investigators phase');
       const color = colorOf(room, playerId);
-      if (!color) return fail(room, 'only an investigator may take a turn');
+      if (!color || !g.inv[color]) return fail(room, 'only an investigator may take a turn');
       if (g.inv[color].laidDown) return fail(room, 'your turn is already over this round');
       let res;
       if (action.type === TYPES.EXPLORE) res = G.explore(g, color, action.dir);
       else if (action.type === TYPES.MOVE) res = G.move(g, color, action.dir);
       else if (action.type === TYPES.PASS) res = G.endTurn(g, color);
-      else res = G.useAbility(g, color, action.params || {});
+      else {
+        const params = action.params ?? {};
+        const abilityError = validateAbilityParams(g.inv[color].characterId, params, g.colors);
+        if (abilityError) return fail(room, abilityError);
+        res = G.useAbility(g, color, params);
+      }
       if (!res || !res.ok) return fail(room, (res && res.reason) || 'illegal action');
       syncPhase(room);
-      return done(room);
+      let result = null;
+      if (action.type === TYPES.EXPLORE) result = { kind: 'explore', outcome: res.result };
+      else if (action.type === TYPES.ABILITY) result = { kind: 'ability', info: res.info };
+      return done(room, result);
     }
 
     // ---- escape decision (MODE.ESCAPE_DECISION) ----
     case TYPES.ESCAPE_CONFIRM: {
       if (!g || g.mode !== MODE.ESCAPE_DECISION) return fail(room, 'not the escape-decision phase');
       const color = colorOf(room, playerId);
-      if (!color) return fail(room, 'only an investigator may confirm escape');
+      if (!color || !g.inv[color]) return fail(room, 'only an investigator may confirm escape');
       if (!room.escape) room.escape = { confirms: [], deadline: null };
       if (!room.escape.confirms.includes(color)) room.escape.confirms.push(color);
       // unanimous within the window => run the same-cell check
@@ -147,7 +163,7 @@ export function applyAction(room, playerId, action) {
     case TYPES.PREDICT: {
       if (!g || g.mode !== MODE.PREDICTION) return fail(room, 'not the prediction phase');
       const color = colorOf(room, playerId);
-      if (!color) return fail(room, 'only an investigator may predict');
+      if (!color || !g.inv[color]) return fail(room, 'only an investigator may predict');
       if (g.inv[color].actionCard !== null) return fail(room, 'you already submitted a prediction');
       G.setPrediction(g, color, action.card); // may transition into the guardian turn
       syncPhase(room);
@@ -168,7 +184,10 @@ export function applyAction(room, playerId, action) {
       else res = G.endGuardianTurn(g);
       if (!res || !res.ok) return fail(room, (res && res.reason) || 'illegal guardian action');
       syncPhase(room);
-      return done(room);
+      const result = action.type === TYPES.ATTACK
+        ? { kind: 'attack', color: action.color, attacker: action.attacker, success: res.success }
+        : null;
+      return done(room, result);
     }
 
     default:
@@ -205,8 +224,20 @@ export function viewFor(room, playerId) {
     color: p ? p.color : null,
     seats: Object.fromEntries(Object.entries(room.players).map(([id, pl]) => [id, { role: pl.role, color: pl.color, name: pl.name }])),
     escape: room.escape ? { confirms: room.escape.confirms.slice(), deadline: room.escape.deadline } : null,
+    winner: room.game ? room.game.winner : null,
   };
   if (!room.game || room.phase === 'lobby') return { ...base, view: null };
+
+  // The public lobby roster must not leak through the in-game projection.
+  // Keep only the actor's seat and aggregate escape progress for investigators.
+  base.playerCount = room.game.colors.length;
+  if (!p || p.role !== 'guardian') {
+    base.seats = p ? { [playerId]: base.seats[playerId] } : {};
+    if (base.escape) {
+      base.escape.confirmCount = base.escape.confirms.length;
+      base.escape.confirms = p ? base.escape.confirms.filter((c) => c === p.color) : [];
+    }
+  }
 
   if (p && p.role === 'guardian') return { ...base, view: projectForGuardian(room.game) };
   if (p && p.role === 'investigator') return { ...base, view: projectForInvestigator(room.game, p.color) };

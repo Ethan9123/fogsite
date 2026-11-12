@@ -11,7 +11,8 @@
 //
 // The local hotseat UI renders from these same views, so its privacy model is
 // identical to the (future) online server's per-client projection.
-import { GRID } from './rules.js';
+import { GRID, MODE, DIR_KEYS } from './rules.js';
+import { canMoveGuard, canMoveDeity, attackTargets } from './game.js';
 
 const key = (r, c) => `${r},${c}`;
 
@@ -76,14 +77,39 @@ export function projectForGuardian(state) {
     }
     grid.push(row);
   }
-  return {
+  const view = {
     role: 'guardian',
     mode: state.mode,
     round: state.round,
     phaseIndex: state.phaseIndex,
     totalTilesLeft: state.totalTilesLeft,
     guardianName: state.guardianName,
+    colors: state.colors.slice(),
     deityActive: state.deity.active,
+    frozenGuards: state.frozenGuards,
+    guardMaxMoves: state.guardMaxMoves,
     grid,
   };
+
+  // During the guardian's own turn, ship engine-computed move/attack hints so the
+  // online client can render legal options WITHOUT re-implementing any rules.
+  if (state.mode === MODE.GUARDIAN && state.guardTurn) {
+    view.guardTurn = { movesUsed: state.guardTurn.movesUsed, deityMovesUsed: state.guardTurn.deityMovesUsed };
+    view.guardMovesLegal = legalDirs((k) => canMoveGuard(state, k));
+    view.attackTargets = {
+      guard: attackTargets(state, 'guard'),
+      deity: state.deity.active ? attackTargets(state, 'deity') : [],
+    };
+    if (state.deity.active) {
+      view.deityMovesLegal = {};
+      for (const col of state.colors) view.deityMovesLegal[col] = legalDirs((k) => canMoveDeity(state, k, col));
+    }
+  }
+  return view;
+}
+
+function legalDirs(can) {
+  const out = {};
+  for (const k of DIR_KEYS) out[k] = can(k);
+  return out;
 }

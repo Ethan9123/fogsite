@@ -6,3 +6,6 @@ Thumbs.db
 .env.*
 dist/
 coverage/
+public/
+dist-worker/
+.wrangler/
