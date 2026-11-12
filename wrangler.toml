@@ -3,12 +3,18 @@
 # Deploy:   npx wrangler deploy
 # Local dev: npx wrangler dev   (runs the Worker + DO locally via workerd)
 #
-# In production, set the origin allowlist so only your own site may open the
-# game socket:   npx wrangler deploy --var ALLOWED_ORIGINS:https://your.site
-# (or set it in the dashboard). Leave it empty for local dev to allow any origin.
+# Room creation and game sockets require the exact same Origin as the request
+# URL by default, including local dev. For a separate trusted frontend, set a
+# comma-separated list of exact http(s) origins (no paths, trailing slashes or
+# wildcards): npx wrangler deploy --var ALLOWED_ORIGINS:https://your.site
+# An explicit list replaces the same-origin default; invalid entries deny access.
 name = "fogsite"
 main = "worker/index.js"
 compatibility_date = "2025-04-01"
+
+# Build even when the hosting integration invokes `wrangler deploy` directly.
+[build]
+command = "npm run build:client"
 
 # Serve the static client. `npm run build:client` assembles exactly the files
 # the browser loads into ./public; the Worker only handles /api/rooms and /ws,
