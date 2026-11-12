@@ -11,6 +11,7 @@ import { emptyMaze, validateMaze, generateMaze, makeRng } from './maze.js';
 import * as G from './game.js';
 import { projectForInvestigator, projectForGuardian } from './project.js';
 import * as Net from './net.js';
+import { actionCardHtml, actionCardBackHtml, charCardHtml } from './cards.js';
 import { TYPES } from '../server/protocol.js';
 
 const app = document.getElementById('app');
@@ -154,7 +155,7 @@ function renderEgoGrid(view) {
       cells.push(`<div class="cell ${cls}">${inner}</div>`);
     }
   }
-  return `<div class="gridwrap"><div class="grid" style="grid-template-columns:repeat(${view.size},52px)">${cells.join('')}</div></div>`;
+  return `<div class="gridwrap ego"><div class="grid" style="grid-template-columns:repeat(${view.size},52px)">${cells.join('')}</div></div>`;
 }
 
 // Guardian full-truth grid (absolute) with all pawns, guard, deity. Renders from
@@ -179,10 +180,10 @@ function renderTruthGrid(view) {
 }
 
 const legend = `<div class="legend">
-  <span><i style="background:#cfd6e6"></i>房间</span>
-  <span><i style="background:#5a4632"></i>墙壁</span>
-  <span><i style="background:#8a5cc4"></i>石室</span>
-  <span><i style="background:#2a2f40"></i>未探明</span>
+  <span><i style="background:#e9e2cf"></i>房间</span>
+  <span><i style="background:#33272b"></i>墙壁</span>
+  <span><i style="background:#2e6b5e;border-radius:50%;border:1px solid #c8a24a"></i>石室</span>
+  <span><i style="background:#c8b994"></i>未探明</span>
 </div>`;
 
 // ---------------------------------------------------------------------------
@@ -205,6 +206,8 @@ function renderBuildScreen(b, opts) {
     <label class="fld"><span class="pill tag-${col}">${COLOR_LABEL[col]}</span>
       <select data-act="set-char" data-color="${col}">${charOpts(b.characters[col])}</select>
     </label>`).join('');
+  const charPreview = `<div class="cardrow mini">${
+    cols.map((col) => charCardHtml(CHARACTER_BY_ID[b.characters[col]], col)).join('')}</div>`;
 
   const tools = [
     ['wall', '墙壁/房间'], ['chamber', '石室'], ['room', '清为房间'],
@@ -228,6 +231,7 @@ function renderBuildScreen(b, opts) {
           <button data-act="set-count" data-n="3" class="${b.count === 3 ? 'sel' : ''}">3 名探检家</button>
         </div>
         ${charRows}
+        ${charPreview}
         <label class="fld"><span>遗迹役名字</span>
           <input type="text" data-act="set-gm" placeholder="遗迹役" value="${esc(b.guardianName)}" />
         </label>
@@ -304,13 +308,12 @@ function renderInvestigator() {
     <h2><span class="pill tag-${color}">${COLOR_LABEL[color]}</span> 探检家 · ${esc(char.name)}</h2>
     <div class="kv">
       <span>起点周围房间数：<b>${g.startHints[color]}</b></span>
-      <span>角色能力：${ui.action === 'ability' || true ? esc(char.desc) : ''}</span>
     </div>
     <div class="row">
       <div class="col" style="flex:0 0 auto">${renderEgoGrid(projectForInvestigator(g, color))}${legend}
         <p class="hint">这是你的相对地图：「起」是你的起点，你并不知道自己在 5×5 中的绝对位置——需要靠探索与推理还原。</p>
       </div>
-      <div class="col">${controls}</div>
+      <div class="col">${controls}<div class="spacer"></div>${charCardHtml(char, color)}</div>
     </div>
   </div>`;
 }
@@ -415,9 +418,9 @@ function renderPredict() {
     <h2><span class="pill tag-${color}">${COLOR_LABEL[color]}</span> 秘密行动预测</h2>
     <p class="hint">遗迹役即将行动。秘密选择你的行动卡——出「休憩」若被攻击会损失 ${RULES.attackTileLoss} 块地块；出「警戒」可挡下攻击，但若没被攻击会被贴「禁止警戒牌」。</p>
     ${forced ? '<div class="notice bad">你身上有「禁止警戒牌」，本回合只能选择「休憩」。</div>' : ''}
-    <div class="btnrow center" style="justify-content:center">
-      <button data-act="predict" data-card="${ACTION.CAUTION}" class="big" ${forced ? 'disabled' : ''}>警戒</button>
-      <button data-act="predict" data-card="${ACTION.REST}" class="big">休憩</button>
+    <div class="cardrow center">
+      ${actionCardHtml(ACTION.CAUTION, { act: 'predict', disabled: forced })}
+      ${actionCardHtml(ACTION.REST, { act: 'predict' })}
     </div>
   </div>`;
 }
@@ -434,10 +437,10 @@ function renderGuardian() {
   const cardRow = g.colors.map((c) => {
     const res = ui.attackResults[c];
     const it = g.inv[c];
-    let face = '面朝下';
-    if (res) face = `${ACTION_LABEL[it.actionCard]} · ${res === 'hit' ? '命中' : '被挡'}`;
-    return `<span class="pill tag-${c}">${COLOR_LABEL[c]}</span> <span class="pill">${face}</span>`;
-  }).join(' &nbsp; ');
+    const stamp = res ? { stamp: res === 'hit' ? '命中' : '被挡', stampCls: res === 'hit' ? 'hit' : 'block' } : {};
+    const face = res ? actionCardHtml(it.actionCard, stamp) : actionCardBackHtml();
+    return `<div class="cardslot"><span class="pill tag-${c}">${COLOR_LABEL[c]}</span>${face}</div>`;
+  }).join('');
 
   const guardDpad = dpad('guard-move', (k) => G.canMoveGuard(g, k));
   let deitySection = '';
@@ -476,7 +479,7 @@ function renderGuardian() {
         <div class="btnrow">${atkBtns(guardTargets, 'guard')}</div>
         ${g.deity.active ? `<div class="btnrow">守护神：${atkBtns(deityTargets, 'deity')}</div>` : ''}
         <h3>行动卡</h3>
-        <div class="kv">${cardRow}</div>
+        <div class="cardrow mini">${cardRow}</div>
         <div class="spacer"></div>
         <button data-act="guard-end" class="primary big">结束遗迹役手番 →</button>
       </div>
@@ -771,6 +774,7 @@ function newOnline() {
     code: null,
     codeInput: '',
     you: null,
+    conn: 'connecting', // 'connecting' | 'online' | 'reconnecting'
     state: null,        // last viewFor pushed by the server
     notice: null,       // transient private result (explore / ability / attack)
     error: null,        // transient error
@@ -803,33 +807,44 @@ function netSend(action) {
   if (o && o.net) { o.error = null; o.net.send(action); }
 }
 
-// Investigator colors currently seated (derived from the public roster).
+// Active colors follow the public player count; names/seat ids stay private.
 function onlineColors() {
-  const seats = ui.online.state ? ui.online.state.seats : {};
+  const state = ui.online.state;
+  if (state && state.phase !== 'lobby') return COLORS.slice(0, state.playerCount);
+  const seats = state ? state.seats : {};
   const present = new Set(Object.values(seats).filter((s) => s.role === 'investigator').map((s) => s.color));
   return COLORS.filter((c) => present.has(c));
 }
 
 async function onlineStart(rawCode) {
   const o = ui.online;
+  if (!o || o.pending) return;
+  o.pending = true;
   o.error = null;
   let code = rawCode;
   try {
     if (!code) code = await Net.createRoom();
     else {
       const info = await Net.lookupRoom(code);
+      if (ui.online !== o) return;
       if (!info.exists) { o.error = `房间 ${code} 不存在`; render(); return; }
     }
   } catch {
+    if (ui.online !== o) return;
     o.error = '无法连接服务器（请确认在线服务器 server/ws.mjs 正在运行）。'; render(); return;
+  } finally {
+    o.pending = false;
   }
+  if (ui.online !== o) return;
   o.code = code;
+  o.conn = 'connecting';
   o.net = Net.connect(code, {
+    onOpen: () => { if (ui.online === o) { o.conn = 'online'; render(); } },
     onWelcome: (m) => { o.you = m.you; },
-    onState: (s) => onOnlineState(s),
+    onState: (s) => { if (ui.online === o) onOnlineState(s); },
     onResult: (r) => { if (ui.online === o) { o.notice = describeResult(r); render(); } },
     onError: (m) => { if (ui.online === o) { o.error = m.error || '操作被拒绝'; render(); } },
-    onClose: () => { if (ui.online === o && ui.mode === 'online') { o.error = '连接已断开'; render(); } },
+    onReconnecting: () => { if (ui.online === o && ui.mode === 'online') { o.conn = 'reconnecting'; render(); } },
   });
   render();
 }
@@ -890,12 +905,25 @@ function renderOnline() {
   if (!o.code || !o.state) html = renderOnlineLobby();
   else if (o.state.phase === 'lobby') html = renderOnlineSeats();
   else if (o.state.phase === 'over') html = renderOnlineOver();
+  else if (!o.state.view || !o.state.role) html = renderOnlineUnseated();
   else if (o.state.role === 'guardian') html = renderOnlineGuardian();
   else html = renderOnlineInvestigator();
   const banner =
+    connBadge(o.conn) +
     (o.error ? `<div class="notice bad">${esc(o.error)}</div>` : '') +
     (o.notice ? `<div class="notice good">${esc(o.notice)}</div>` : '');
   app.innerHTML = banner + html;
+}
+
+// Connection health. Stays out of the way while healthy; surfaces a clear,
+// non-alarming notice while connecting or auto-reconnecting (the seat is held
+// server-side, so the game resumes the moment the socket comes back).
+function connBadge(conn) {
+  if (conn === 'reconnecting')
+    return `<div class="notice" style="text-align:center;color:#c8a24a">● 连接已断开，正在自动重连…（你的座位已保留）</div>`;
+  if (conn === 'connecting')
+    return `<div class="notice hint" style="text-align:center">● 连接中…</div>`;
+  return '';
 }
 
 function roomBadge(code) {
@@ -974,6 +1002,15 @@ function renderOnlineSeats() {
   </div>`;
 }
 
+function renderOnlineUnseated() {
+  return `<div class="panel center">
+    <h2>对局已经开始</h2>
+    ${roomBadge(ui.online.code)}
+    <p class="hint">你在这局中没有座位，无法加入或查看棋盘。若要重连，请使用原来的浏览器标签页。</p>
+    <button data-act="o-menu" class="primary">← 返回模式选择</button>
+  </div>`;
+}
+
 function renderOnlineOver() {
   const s = ui.online.state;
   const inv = s.winner === WINNER.INVESTIGATORS;
@@ -1003,9 +1040,8 @@ function renderOnlineInvestigator() {
     <h2><span class="pill tag-${v.color}">${COLOR_LABEL[v.color]}</span> 探检家 · ${esc(char.name)}</h2>
     <div class="kv">
       <span>起点周围房间数：<b>${v.startHint}</b></span>
-      <span>角色能力：${esc(char.desc)}</span>
     </div>
-    <div class="row">${grid}<div class="col">${panel}</div></div>
+    <div class="row">${grid}<div class="col">${panel}<div class="spacer"></div>${charCardHtml(char, v.color)}</div></div>
   </div>`;
 }
 
@@ -1074,9 +1110,9 @@ function onlinePredictPanel() {
   return `<h3>秘密行动预测</h3>
     <p class="hint">秘密选择行动卡：「休憩」若被攻击损失 ${RULES.attackTileLoss} 块；「警戒」可挡下攻击，但未被攻击会被贴「禁止警戒牌」。</p>
     ${forced ? '<div class="notice bad">你身上有「禁止警戒牌」，本回合只能「休憩」。</div>' : ''}
-    <div class="btnrow">
-      <button data-act="o-predict" data-card="${ACTION.CAUTION}" class="big" ${forced ? 'disabled' : ''}>警戒</button>
-      <button data-act="o-predict" data-card="${ACTION.REST}" class="big">休憩</button>
+    <div class="cardrow">
+      ${actionCardHtml(ACTION.CAUTION, { act: 'o-predict', disabled: forced })}
+      ${actionCardHtml(ACTION.REST, { act: 'o-predict' })}
     </div>`;
 }
 
@@ -1086,7 +1122,7 @@ function onlineEscapePanel() {
   const mine = confirms.includes(v.color);
   const remain = s.escape && s.escape.deadline ? Math.max(0, s.escape.deadline - Date.now()) : 0;
   const cols = onlineColors();
-  const tally = cols.map((c) => `<span class="pill tag-${c}" style="opacity:${confirms.includes(c) ? 1 : 0.35}">${COLOR_LABEL[c]}${confirms.includes(c) ? ' ✓' : ''}</span>`).join(' ');
+  const tally = `${s.escape?.confirmCount ?? confirms.length}/${cols.length} 人`;
   return `<h3>脱出挑战</h3>
     <p class="hint">若你们认为全员已在同一格，全部 ${cols.length} 人在倒计时内确认即触发检定。倒计时结束未全员确认则放弃脱出、继续探索。</p>
     <div class="who" id="escape-timer" style="color:var(--accent)">${(remain / 1000).toFixed(1)}s</div>
@@ -1131,10 +1167,13 @@ function renderOnlineGuardian() {
   const atkBtns = (list, attacker) => (list && list.length)
     ? list.map((c) => `<button data-act="o-attack" data-attacker="${attacker}" data-color="${c}" class="danger"><span class="pill tag-${c}">${COLOR_LABEL[c]}</span> 攻击</button>`).join('')
     : '<span class="hint">无可攻击目标</span>';
+  // The online guardian view never learns the card identity directly, so a
+  // resolved attack stamps the face-down back instead of flipping it.
   const cardRow = v.colors.map((c) => {
     const res = o.attackResults[c];
-    return `<span class="pill tag-${c}">${COLOR_LABEL[c]}</span> <span class="pill">${res ? (res === 'hit' ? '命中' : '被挡') : '面朝下'}</span>`;
-  }).join(' &nbsp; ');
+    const face = actionCardBackHtml(res ? { stamp: res === 'hit' ? '命中' : '被挡', stampCls: res === 'hit' ? 'hit' : 'block' } : {});
+    return `<div class="cardslot"><span class="pill tag-${c}">${COLOR_LABEL[c]}</span>${face}</div>`;
+  }).join('');
 
   return `<div class="panel">
     <h2>遗迹役手番 · ${esc(v.guardianName)}</h2>
@@ -1154,7 +1193,7 @@ function renderOnlineGuardian() {
         <div class="btnrow">${atkBtns(v.attackTargets && v.attackTargets.guard, 'guard')}</div>
         ${v.deityActive ? `<div class="btnrow">守护神：${atkBtns(v.attackTargets && v.attackTargets.deity, 'deity')}</div>` : ''}
         <h3>行动卡</h3>
-        <div class="kv">${cardRow}</div>
+        <div class="cardrow mini">${cardRow}</div>
         <div class="spacer"></div>
         <button data-act="o-guard-end" class="primary big">结束遗迹役手番 →</button>
       </div>

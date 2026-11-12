@@ -5,23 +5,13 @@
 // Secrecy is enforced here by only ever sending a client `viewFor(room, pid)` —
 // the projected view for that player. Raw room/game state never goes on the wire.
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { createRoom, applyAction, viewFor, ESCAPE_SECONDS } from './room.js';
 import { TYPES as MSG } from './protocol.js';
 import { MODE } from '../src/rules.js';
-
-const ROOT = fileURLToPath(new URL('..', import.meta.url)); // project root (parent of server/)
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-};
+import { readClientAsset } from './client-assets.mjs';
 
 const token = () => randomBytes(16).toString('hex');
 const roomCode = () => {
@@ -41,7 +31,9 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
   const rooms = new Map();
 
   const http = createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); }
+    catch { res.writeHead(400).end('invalid request target'); return; }
 
     // ---- lobby API ----
     if (req.method === 'POST' && url.pathname === '/api/rooms') {
@@ -56,23 +48,18 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
     }
 
     // ---- static client ----
-    try {
-      let p = decodeURIComponent(url.pathname);
-      if (p === '/') p = '/index.html';
-      const filePath = normalize(join(ROOT, p));
-      if (!filePath.startsWith(ROOT)) { res.writeHead(403).end('forbidden'); return; }
-      const data = await readFile(filePath);
-      res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] || 'application/octet-stream' });
-      res.end(data);
-    } catch {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('404');
-    }
+    const asset = await readClientAsset(url.pathname, req.method);
+    if (!asset) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('404'); return; }
+    res.writeHead(200, { 'Content-Type': asset.contentType });
+    res.end(asset.data);
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
   http.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, 'http://localhost');
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); }
+    catch { socket.destroy(); return; }
     if (url.pathname !== '/ws') { socket.destroy(); return; }
     const code = (url.searchParams.get('code') || '').toUpperCase();
     const entry = rooms.get(code);
@@ -83,6 +70,9 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
   });
 
   wss.on('connection', (ws, _req, entry, reconnectToken) => {
+    // ws emits protocol/transport errors on the individual connection. Without
+    // this listener a malformed frame can terminate the entire Node process.
+    ws.on('error', () => ws.terminate());
     // Resolve the player id: reuse the seat on a valid reconnect token, else new.
     let pid;
     if (reconnectToken && entry.tokens.has(reconnectToken)) {
@@ -101,8 +91,13 @@ export function startServer(port = Number(process.env.PORT) || 5174) {
     send(ws, { type: 'state', state: viewFor(entry.room, pid) });
 
     ws.on('message', (data) => {
+      if (entry.clients.get(pid) !== ws) return; // replaced during reconnect
       let action;
       try { action = JSON.parse(data.toString()); } catch { return send(ws, { type: 'error', error: 'malformed message' }); }
+      // Only the server-owned timer may expire the escape decision window.
+      if (action?.type === MSG.ESCAPE_TIMEOUT) {
+        return send(ws, { type: 'error', error: 'escape timeout is server-owned' });
+      }
       const res = applyAction(entry.room, pid, action);
       if (res.error) {
         send(ws, { type: 'error', error: res.error });
