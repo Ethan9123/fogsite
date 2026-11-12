@@ -2,7 +2,7 @@ name: Multiplayer regression checks
 on:
   pull_request:
   push:
-    branches: ['fix/multiplayer-crash-hardening']
+    branches: ['master', 'fix/multiplayer-crash-hardening']
 permissions:
   contents: read
 jobs:

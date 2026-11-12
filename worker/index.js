@@ -15,8 +15,8 @@
 //     the setTimeout in ws.mjs), so it survives hibernation.
 //
 // The default export is a normal Worker `fetch` handler that serves the lobby
-// HTTP API, routes /ws upgrades to the right room DO (behind an optional origin
-// allowlist for production), and otherwise serves the static client via the
+// HTTP API, routes /ws upgrades to the right room DO (same-origin by default,
+// or an explicit origin allowlist), and otherwise serves the static client via the
 // Assets binding.
 import { createRoom, applyAction, viewFor, ESCAPE_SECONDS } from '../server/room.js';
 import { TYPES as MSG } from '../server/protocol.js';
@@ -24,6 +24,28 @@ import { MODE } from '../src/rules.js';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no easily-confused chars
 const token = () => crypto.randomUUID().replace(/-/g, '');
+const VALID_CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}$/;
+const MAX_MESSAGE_BYTES = 64 * 1024;
+
+// An Origin is a serialized origin, not a URL prefix, path, wildcard or opaque
+// origin. An invalid configured entry must not silently enable a fallback.
+function validOrigin(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const u = new URL(value);
+    return (u.protocol === 'https:' || u.protocol === 'http:') && u.origin === value;
+  } catch { return false; }
+}
+
+function allowedOrigin(request, env) {
+  const origin = request.headers.get('Origin');
+  if (!validOrigin(origin)) return false;
+  const configured = env.ALLOWED_ORIGINS;
+  if (configured !== undefined && typeof configured !== 'string') return false;
+  if (!configured?.trim()) return origin === new URL(request.url).origin;
+  const allow = configured.split(',').map((s) => s.trim());
+  return allow.every(validOrigin) && allow.includes(origin);
+}
 
 function roomCode() {
   const b = new Uint8Array(4);
@@ -48,6 +70,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'POST' && url.pathname === '/api/rooms') {
+      if (!allowedOrigin(request, env)) return new Response('forbidden origin', { status: 403 });
       // Allocate a fresh, unused code by asking candidate DOs to initialise.
       for (let i = 0; i < 6; i++) {
         const code = roomCode();
@@ -58,21 +81,20 @@ export default {
     }
 
     if (request.method === 'GET' && url.pathname.startsWith('/api/rooms/')) {
-      const code = decodeURIComponent(url.pathname.slice('/api/rooms/'.length)).toUpperCase();
+      let code;
+      try { code = decodeURIComponent(url.pathname.slice('/api/rooms/'.length)).toUpperCase(); }
+      catch { return json({ error: 'invalid room code' }, 400); }
+      if (!VALID_CODE.test(code)) return json({ error: 'invalid room code' }, 400);
       const r = await roomStub(env, code).fetch(new Request('https://do/__exists'));
       const body = await r.json();
       return json(body, body.exists ? 200 : 404);
     }
 
     if (url.pathname === '/ws') {
-      // Production: only accept WebSocket upgrades from allowed origins.
-      const allow = (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
-      if (allow.length) {
-        const origin = request.headers.get('Origin') || '';
-        if (!allow.includes(origin)) return new Response('forbidden origin', { status: 403 });
-      }
+      if (request.method !== 'GET') return new Response('method not allowed', { status: 405 });
+      if (!allowedOrigin(request, env)) return new Response('forbidden origin', { status: 403 });
       const code = (url.searchParams.get('code') || '').toUpperCase();
-      if (!code) return new Response('missing room code', { status: 400 });
+      if (!VALID_CODE.test(code)) return new Response('invalid room code', { status: 400 });
       return roomStub(env, code).fetch(request);
     }
 
@@ -99,7 +121,8 @@ export class Room {
     if (this.room && this.seats) return;
     const m = await this.state.storage.get(['room', 'seats']);
     this.room = m.get('room') ?? null;
-    this.seats = m.get('seats') ?? { tokens: {}, pidToToken: {}, nextPid: 0 };
+    this.seats = m.get('seats') ?? { tokens: {}, pidToToken: {}, connectionIds: {}, nextPid: 0 };
+    this.seats.connectionIds ??= {};
   }
 
   async persist() {
@@ -114,9 +137,26 @@ export class Room {
 
   send(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch {} }
 
+  currentConnection(ws) {
+    const att = ws.deserializeAttachment();
+    return att && Number.isSafeInteger(att.pid) && att.pid >= 0 &&
+      typeof att.connectionId === 'string' &&
+      Object.hasOwn(this.seats.connectionIds, att.pid) &&
+      this.seats.connectionIds[att.pid] === att.connectionId ? att : null;
+  }
+
+  async retireConnection(ws, code, reason) {
+    const att = this.currentConnection(ws);
+    if (att) {
+      delete this.seats.connectionIds[att.pid];
+      await this.persist();
+    }
+    if (code !== undefined) try { ws.close(code, reason); } catch {}
+  }
+
   broadcast() {
     for (const ws of this.state.getWebSockets()) {
-      const att = ws.deserializeAttachment();
+      const att = this.currentConnection(ws);
       if (att) this.send(ws, { type: 'state', state: viewFor(this.room, att.pid) });
     }
   }
@@ -128,7 +168,7 @@ export class Room {
     if (request.method === 'POST' && url.pathname === '/__init') {
       if (this.room) return json({ created: false });
       this.room = createRoom(url.searchParams.get('code'));
-      this.seats = { tokens: {}, pidToToken: {}, nextPid: 0 };
+      this.seats = { tokens: {}, pidToToken: {}, connectionIds: {}, nextPid: 0 };
       await this.persist();
       return json({ created: true });
     }
@@ -155,13 +195,19 @@ export class Room {
         const t = token();
         this.seats.tokens[t] = pid;
         this.seats.pidToToken[pid] = t;
-        await this.persist();
       }
+
+      // A reconnect keeps the seat credential but replaces its active connection.
+      // Persist before returning the upgrade so hibernation cannot resurrect the
+      // old socket. Closing a socket alone does not discard already queued events.
+      const connectionId = token();
+      this.seats.connectionIds[pid] = connectionId;
+      await this.persist();
 
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
       this.state.acceptWebSocket(server); // enables hibernation
-      server.serializeAttachment({ pid, token: this.seats.pidToToken[pid] });
+      server.serializeAttachment({ pid, connectionId });
 
       this.send(server, { type: 'welcome', you: pid, token: this.seats.pidToToken[pid], code: this.room.code });
       this.send(server, { type: 'state', state: viewFor(this.room, pid) });
@@ -173,13 +219,31 @@ export class Room {
 
   async webSocketMessage(ws, message) {
     await this.load();
-    let action;
-    try { action = JSON.parse(typeof message === 'string' ? message : new TextDecoder().decode(message)); }
-    catch { return this.send(ws, { type: 'error', error: 'malformed message' }); }
-
-    const att = ws.deserializeAttachment();
-    if (!att) return;
+    const att = this.currentConnection(ws);
+    if (!this.room || !att) {
+      try { ws.close(1008, 'reconnect required'); } catch {}
+      return;
+    }
     const pid = att.pid;
+    const byteLength = typeof message === 'string'
+      ? (message.length > MAX_MESSAGE_BYTES ? message.length : new TextEncoder().encode(message).byteLength)
+      : message.byteLength;
+    if (byteLength > MAX_MESSAGE_BYTES) {
+      await this.retireConnection(ws, 1009, 'message too large');
+      return;
+    }
+    let action;
+    try {
+      const text = typeof message === 'string' ? message : new TextDecoder('utf-8', { fatal: true }).decode(message);
+      action = JSON.parse(text);
+    } catch { return this.send(ws, { type: 'error', error: 'malformed message' }); }
+
+    // This message belongs only to the trusted Durable Object alarm. The core
+    // accepts the guardian pid for timer callbacks, not as client permission to
+    // shorten the investigators' server-owned escape countdown.
+    if (action?.type === MSG.ESCAPE_TIMEOUT) {
+      return this.send(ws, { type: 'error', error: 'server-only action' });
+    }
 
     const res = applyAction(this.room, pid, action);
     if (res.error) {
@@ -193,11 +257,21 @@ export class Room {
     this.broadcast();
   }
 
-  async webSocketClose(ws) {
-    // The seat persists in room.players[pid] so the player can reconnect; nothing to do.
+  async webSocketClose(ws, code = 1000) {
+    await this.load();
+    // Revoke this connection only; an older socket's close must not revoke the
+    // replacement, and the seat credential remains available for reconnect.
+    // Older compatibility dates require the application to finish the close
+    // handshake. Reserved synthetic codes cannot be sent on the wire.
+    const closeCode = (code === 1000 || (code >= 1001 && code <= 1014 && ![1004, 1005, 1006].includes(code)) ||
+      (code >= 3000 && code <= 4999)) ? code : 1000;
+    await this.retireConnection(ws, closeCode, 'connection closed');
   }
 
-  async webSocketError() {}
+  async webSocketError(ws) {
+    await this.load();
+    await this.retireConnection(ws, 1011, 'connection error');
+  }
 
   // The escape window: the DO alarm is the durable analogue of ws.mjs's setTimeout.
   async manageEscapeAlarm() {

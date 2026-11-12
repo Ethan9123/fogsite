@@ -73,8 +73,37 @@ test('replaced sockets cannot submit queued actions after reconnect', async () =
   } finally { await server.close(); }
 });
 
+test('Node clients cannot expire the server-owned escape countdown', async () => {
+  const server = await startServer(0);
+  try {
+    const { code } = await (await fetch(`http://localhost:${server.port}/api/rooms`, { method: 'POST' })).json();
+    const clients = [];
+    for (let i = 0; i < 4; i++) {
+      const client = connect(`ws://localhost:${server.port}/ws?code=${code}`);
+      clients.push(client);
+      await client.opened;
+      await client.next((m) => m.type === 'welcome');
+      client.send(i === 0 ? { type: 'join', role: 'guardian' } : { type: 'join', role: 'investigator', color: COLORS[i - 1] });
+      await client.next((m) => m.type === 'state' && m.state.role === (i === 0 ? 'guardian' : 'investigator'));
+    }
+    const guardian = clients[0];
+    guardian.send({ type: 'configure', count: 3, characters: { red: 'monk', green: 'doctor', blue: 'guide' }, maze: generateMaze(COLORS, makeRng(12345)) });
+    guardian.send({ type: 'start' });
+    await guardian.next((m) => m.type === 'state' && m.state.phase === 'playing');
+    for (const client of clients.slice(1)) client.send({ type: 'pass' });
+    await guardian.next((m) => m.type === 'state' && m.state.escape?.deadline);
+    const entry = server.rooms.get(code);
+    const before = structuredClone(entry.room);
+    assert.ok(before.escape.deadline > Date.now());
+    guardian.send({ type: 'escape_timeout' });
+    assert.match((await guardian.next((m) => m.type === 'error')).error, /server-owned/);
+    assert.deepEqual(entry.room, before);
+    for (const client of clients) client.ws.close();
+  } finally { await server.close(); }
+});
+
 function durableState(room) {
-  const data = new Map([['room', structuredClone(room)], ['seats', { tokens: {}, pidToToken: {}, nextPid: 4 }]]);
+  const data = new Map([['room', structuredClone(room)], ['seats', { tokens: {}, pidToToken: {}, connectionIds: { 0: 'test-0', 1: 'test-1' }, nextPid: 4 }]]);
   let alarm = null;
   const sockets = [];
   return { data, sockets, getWebSockets: () => sockets,
@@ -86,7 +115,7 @@ function durableState(room) {
   };
 }
 function workerSocket(pid) {
-  return { messages: [], deserializeAttachment: () => ({ pid }), send(raw) { this.messages.push(JSON.parse(raw)); } };
+  return { messages: [], deserializeAttachment: () => ({ pid, connectionId: `test-${pid}` }), send(raw) { this.messages.push(JSON.parse(raw)); } };
 }
 
 test('Durable Object transport rejects malformed actions and preserves state across reload', async () => {
